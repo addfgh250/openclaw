@@ -15,7 +15,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '22'
+        node-version: '22'   # 仅用于运行 pnpm，不影响 pkg 目标
 
     - name: Install pnpm and pkg
       run: |
@@ -27,15 +27,14 @@ jobs:
     - name: Build OpenClaw (TypeScript -> JS)
       run: pnpm build || echo "No build script, skipping"
 
-    - name: Package standalone binary for ARM64 Linux
+    - name: Package standalone binary for ARM64
       run: |
-        # 确定入口文件，可能是 openclaw.mjs 或 dist/index.js
         if [ -f "openclaw.mjs" ]; then
-          pkg openclaw.mjs --targets node22-linux-arm64 --output openclaw
+          pkg openclaw.mjs --targets node20-linux-arm64 --output openclaw
         elif [ -f "dist/index.js" ]; then
-          pkg dist/index.js --targets node22-linux-arm64 --output openclaw
+          pkg dist/index.js --targets node20-linux-arm64 --output openclaw
         else
-          pkg . --targets node22-linux-arm64 --output openclaw
+          pkg . --targets node20-linux-arm64 --output openclaw
         fi
 
     - name: Upload binary artifact
