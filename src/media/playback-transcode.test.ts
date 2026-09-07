@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../test-utils/temp-home.js";
@@ -93,35 +94,6 @@ function createCacheKey(source: {
     throw new Error("playback transcode test API unavailable");
   }
   return testApi.createPlaybackTranscodeCacheKey(source);
-}
-
-async function readSourceBoundedForTest(
-  handle: {
-    read: (
-      buffer: Buffer,
-      offset: number,
-      length: number,
-      position: number,
-    ) => Promise<{ bytesRead: number; buffer: Buffer }>;
-  },
-  expectedSize: number,
-  maxBytes: number,
-): Promise<Buffer> {
-  const testApi = (globalThis as Record<PropertyKey, unknown>)[
-    Symbol.for("openclaw.playbackTranscodeTestApi")
-  ] as
-    | {
-        readPlaybackSourceBounded?: (
-          value: typeof handle,
-          expected: number,
-          max: number,
-        ) => Promise<Buffer>;
-      }
-    | undefined;
-  if (!testApi?.readPlaybackSourceBounded) {
-    throw new Error("playback bounded-read test API unavailable");
-  }
-  return await testApi.readPlaybackSourceBounded(handle, expectedSize, maxBytes);
 }
 
 describe("playback transcode policy", () => {
@@ -271,18 +243,118 @@ describe("playback transcode policy", () => {
 });
 
 describe("resolvePlaybackTranscode", () => {
-  it("rejects descriptor growth after reading only the bounded overflow byte", async () => {
-    const contents = Buffer.from("123456");
-    const read = vi.fn(async (buffer: Buffer, offset: number, length: number, position: number) => {
-      expect(buffer.byteLength).toBe(6);
-      const bytesRead = contents.copy(buffer, offset, position, position + length);
-      return { bytesRead, buffer };
-    });
+  it.each(["grow", "truncate", "rewrite", "replace"] as const)(
+    "rejects a source that changes after open via %s before starting ffmpeg",
+    async (change) => {
+      const source = await createSource(`changed-${change}.caf`, "stable-source");
+      let changed = false;
+      __setFsSafeTestHooksForTest({
+        afterOpenedPathIdentityCheck: async (filePath) => {
+          if (filePath !== source.sourcePath || changed) {
+            return;
+          }
+          changed = true;
+          if (change === "grow") {
+            await fs.appendFile(filePath, "growth");
+          } else if (change === "truncate") {
+            await fs.truncate(filePath, 1);
+          } else if (change === "rewrite") {
+            await fs.writeFile(filePath, "edited-source");
+          } else {
+            await fs.rename(filePath, `${filePath}.old`);
+            await fs.writeFile(filePath, "stable-source");
+          }
+        },
+      });
+      try {
+        const params = {
+          ...source,
+          mimeType: "audio/x-caf",
+          kind: "audio" as const,
+          probe: { durationMs: 1000, audioStreamIndex: 0 },
+        };
+        expect(await playback.resolvePlaybackTranscode(params)).toEqual({ kind: "preparing" });
+        await expect(waitForPlaybackTranscodeJobsForTest("all")).rejects.toThrow(
+          /changed|mismatch/,
+        );
+        expect(changed).toBe(true);
+        expect(runFfmpeg).not.toHaveBeenCalled();
+        expect(await playback.resolvePlaybackTranscode(params)).toEqual({ kind: "fallback" });
+      } finally {
+        __setFsSafeTestHooksForTest(undefined);
+        await settlePlaybackTranscodeJobsForTest();
+      }
+    },
+  );
 
-    await expect(readSourceBoundedForTest({ read }, 5, 5)).rejects.toThrow(
-      "Playback source changed during bounded read",
-    );
-    expect(read).toHaveBeenCalledOnce();
+  it("rejects a moved input that no longer names its staging descriptor", async () => {
+    const source = await createSource("replaced-staging.caf", "stable-source");
+    const rename = fs.rename.bind(fs);
+    let replaced = false;
+    const spy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (
+        path.basename(String(from)) === ".input.caf.stage" &&
+        path.basename(String(to)) === "input.caf"
+      ) {
+        await fs.unlink(to);
+        await fs.writeFile(to, "stable-source", { mode: 0o600 });
+        replaced = true;
+      }
+    });
+    try {
+      expect(
+        await playback.resolvePlaybackTranscode({
+          ...source,
+          mimeType: "audio/x-caf",
+          kind: "audio",
+          probe: { durationMs: 1000, audioStreamIndex: 0 },
+        }),
+      ).toEqual({ kind: "preparing" });
+      await expect(waitForPlaybackTranscodeJobsForTest("all")).rejects.toThrow(/changed|mismatch/);
+      expect(replaced).toBe(true);
+      expect(runFfmpeg).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      await settlePlaybackTranscodeJobsForTest();
+    }
+  });
+
+  it("does not publish a cache entry when workspace cleanup fails", async () => {
+    const source = await createSource("cleanup-failed.caf", "stable-source");
+    const cleanupError = new Error("synthetic workspace cleanup failure");
+    const remove = fs.rm.bind(fs);
+    let quarantine: string | undefined;
+    const spy = vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
+      if (path.basename(String(target)).startsWith(".fs-safe-workspace-cleanup-")) {
+        quarantine = String(target);
+        throw cleanupError;
+      }
+      return remove(target, options);
+    });
+    runFfmpeg.mockImplementationOnce(async (args: string[]) => {
+      await fs.writeFile(args.at(-1) ?? "", "normalized-audio");
+      return "";
+    });
+    try {
+      const params = {
+        ...source,
+        mimeType: "audio/x-caf",
+        kind: "audio" as const,
+        probe: { durationMs: 1000, audioStreamIndex: 0 },
+      };
+      expect(await playback.resolvePlaybackTranscode(params)).toEqual({ kind: "preparing" });
+      await expect(waitForPlaybackTranscodeJobsForTest("all")).rejects.toBe(cleanupError);
+      expect(runFfmpeg).toHaveBeenCalledOnce();
+      expect(quarantine).toBeDefined();
+      expect(await playback.resolvePlaybackTranscode(params)).toEqual({ kind: "fallback" });
+    } finally {
+      spy.mockRestore();
+      await settlePlaybackTranscodeJobsForTest();
+      if (quarantine) {
+        await remove(quarantine, { recursive: true, force: true });
+      }
+    }
   });
 
   it("falls back before ffmpeg when source duration exceeds the transcode limit", async () => {
