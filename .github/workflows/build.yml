@@ -28,14 +28,14 @@ jobs:
       run: pnpm build || echo "No build script, skipping"
 
     - name: Package standalone binary for ARM64
-      run: |
-        if [ -f "openclaw.mjs" ]; then
-          pkg openclaw.mjs --targets node20-linux-arm64 --output openclaw
-        elif [ -f "dist/index.js" ]; then
-          pkg dist/index.js --targets node20-linux-arm64 --output openclaw
-        else
-          pkg . --targets node20-linux-arm64 --output openclaw
-        fi
+  run: |
+    if [ -f "openclaw.mjs" ]; then
+      pkg openclaw.mjs --targets node18-linux-arm64 --output openclaw
+    elif [ -f "dist/index.js" ]; then
+      pkg dist/index.js --targets node18-linux-arm64 --output openclaw
+    else
+      pkg . --targets node18-linux-arm64 --output openclaw
+    fi
 
     - name: Upload binary artifact
       uses: actions/upload-artifact@v4
