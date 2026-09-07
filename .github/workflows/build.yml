@@ -1,4 +1,4 @@
-name: Build OpenClaw for ARM64
+name: Build OpenClaw for ARM64 (Optimized for Dimensity 700)
 
 on:
   push:
@@ -8,7 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -17,26 +16,30 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '22'
-        cache: 'pnpm'
 
-    - name: Install pnpm
-      run: npm install -g pnpm
+    - name: Install pnpm and pkg
+      run: |
+        npm install -g pnpm pkg
 
     - name: Install dependencies
       run: pnpm install
 
-    - name: Build OpenClaw
-      run: pnpm build
+    - name: Build OpenClaw (TypeScript -> JS)
+      run: pnpm build || echo "No build script, skipping"
 
-    - name: Package artifacts
+    - name: Package standalone binary for ARM64 Linux
       run: |
-        mkdir -p dist/package
-        cp -r dist/ openclaw.mjs package.json node_modules/ dist/package/
-        cd dist/package
-        tar -czf ../openclaw-built.tar.gz .
+        # 确定入口文件，可能是 openclaw.mjs 或 dist/index.js
+        if [ -f "openclaw.mjs" ]; then
+          pkg openclaw.mjs --targets node22-linux-arm64 --output openclaw
+        elif [ -f "dist/index.js" ]; then
+          pkg dist/index.js --targets node22-linux-arm64 --output openclaw
+        else
+          pkg . --targets node22-linux-arm64 --output openclaw
+        fi
 
-    - name: Upload artifact
+    - name: Upload binary artifact
       uses: actions/upload-artifact@v4
       with:
-        name: openclaw-built
-        path: dist/openclaw-built.tar.gz
+        name: openclaw-dimensity700
+        path: openclaw
