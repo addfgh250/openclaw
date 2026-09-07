@@ -9,36 +9,36 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '22'   # 仅用于运行 pnpm，不影响 pkg 目标
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-    - name: Install pnpm and pkg
-      run: |
-        npm install -g pnpm pkg
+      - name: Install pnpm and pkg
+        run: |
+          npm install -g pnpm pkg
 
-    - name: Install dependencies
-      run: pnpm install
+      - name: Install dependencies
+        run: pnpm install
 
-    - name: Build OpenClaw (TypeScript -> JS)
-      run: pnpm build || echo "No build script, skipping"
+      - name: Build OpenClaw (TypeScript -> JS)
+        run: pnpm build || echo "No build script, skipping"
 
-    - name: Package standalone binary for ARM64
-  run: |
-    if [ -f "openclaw.mjs" ]; then
-      pkg openclaw.mjs --targets node18-linux-arm64 --output openclaw
-    elif [ -f "dist/index.js" ]; then
-      pkg dist/index.js --targets node18-linux-arm64 --output openclaw
-    else
-      pkg . --targets node18-linux-arm64 --output openclaw
-    fi
+      - name: Package standalone binary for ARM64
+        run: |
+          if [ -f "openclaw.mjs" ]; then
+            pkg openclaw.mjs --targets node18-linux-arm64 --output openclaw
+          elif [ -f "dist/index.js" ]; then
+            pkg dist/index.js --targets node18-linux-arm64 --output openclaw
+          else
+            pkg . --targets node18-linux-arm64 --output openclaw
+          fi
 
-    - name: Upload binary artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: openclaw-dimensity700
-        path: openclaw
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-dimensity700
+          path: openclaw
